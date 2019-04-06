@@ -1,0 +1,86 @@
+---
+title: "Untitled"
+author: "George G Vega Yon"
+date: "April 5, 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(dplyr)
+library(magrittr)
+```
+
+```{r read-the-data}
+dat <- readRDS("data/model_data.rds")
+```
+
+## Part 1: Descriptive statistics
+
+```{r}
+part1 <- dat %>%
+  filter(val == 0) %>%
+  group_by(died) %>%
+  summarise(
+    `Age`  = sprintf("%.2f (%.2f)", mean(age), sd(age)),
+    `Male` = sprintf("%d (%.2f%%)", sum(male), mean(male)*100),
+    `SBP (mm Hg)` = sprintf("%.2f (%.2f)", mean(sbp), sd(sbp)),
+    `RR (breaths per minute)` = sprintf("%.2f (%.2f)", mean(rr), sd(rr)),
+    `Glasgow Coma Scale` = sprintf("%.2f (%.2f)", mean(gcs), sd(gcs))
+  )
+
+part1 <- t(part1)
+colnames(part1) <- c("Survived", "Died")
+part1 <- part1[-1,]
+
+part2 <- dat %>%
+  filter(val == 0) %>%
+  group_by(died) %>%
+  summarize(
+    Asian                = sprintf("%d (%.2f%%)", sum(race == 1L), sum(race == 1L)/n()*100),
+    `African American`   = sprintf("%d (%.2f%%)", sum(race == 2L), sum(race == 2L)/n()*100),
+    `Non-Hispanic white` = sprintf("%d (%.2f%%)", sum(race == 3L), sum(race == 3L)/n()*100),
+    `Hispanic white`     = sprintf("%d (%.2f%%)", sum(race == 4L), sum(race == 4L)/n()*100)
+  )
+
+part2 <- t(part2)
+colnames(part2) <- c("Survived", "Died")
+part2 <- part2[-1,]
+rownames(part2) <- paste0("\\hspace{.5cm}", rownames(part2))
+
+part3 <- dat %>%
+  filter(val == 0) %>%
+  group_by(died) %>%
+  summarize(
+    Total = n()
+  ) %>% t
+part3 <- part3[-1,, drop=FALSE]
+colnames(part3) <- NULL
+
+tab <- rbind(
+  part1,
+  structure(c("", ""), class="matrix", dim=c(1, 2), dimnames = list("\\it Ethnicity", NULL)),
+  part2,
+  part3
+  )
+knitr::kable(tab, caption = "Descriptive statistics by status (In-hospital mortality). In the case of continuous variables, standard errors are showed in parenthesis, otherwise it shows the proportion within the group.")
+
+```
+
+## Part 2: Predictive model
+
+```{r coding-race}
+race <- c("Asian", "African American", "Non-Hispanic white", "Hispanic white")
+dat$race <- race[dat$race]
+dat$race2 <- factor(dat$race, levels = race)
+```
+
+
+```{r model_part2_01, results='asis'}
+library(texreg)
+model_part2_01 <- glm(died ~ age + male + race + sbp + rr + gcs, data=dat,
+                      family = binomial(link = "logit"))
+model_part2_01 %>%
+  texreg()
+```
+
