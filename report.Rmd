@@ -1,26 +1,40 @@
 ---
-title: "Untitled"
+title: "PM511b Data Analysis Project"
 author: "George G Vega Yon"
 date: "April 5, 2019"
 output:
   pdf_document:
     includes:
       in_header: header.tex
+    keep_tex: true
 ---
 
 ```{r setup, include=FALSE, warning=FALSE, message=FALSE}
-knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(echo = FALSE, fig.align = "!h", out.width = ".7\\linewidth", fig.align = "center")
 library(dplyr)
 library(magrittr)
+library(ggplot2)
+source("functions.R")
 ```
 
 ```{r read-the-data}
-dat <- readRDS("data/model_data.rds")
+dat    <- readRDS("data/model_data.rds")
+models <- readRDS("data/automatic_model_selection.rds")
 ```
 
-## Part 1: Descriptive statistics
+## Question 1
 
-```{r}
+\autoref{tab:desc} shows a set of descriptive statistics for the variables in the dataset. The following observations:
+
+1.  In the training dataset, only a handful of cases corresponds to patients that have died. In an ideal world we would like to have a rather balance sample size of the two cases.
+
+2.  Of all the variables, *Age*, *Glasgow Coma Scale*, and *(Ethnycity = Asian)* are the only ones that show to be significantly different across groups. This makes them more likely to be meaningful (significant) in the prediction model that will be described in the next section.
+
+3.  Finally, the training dataset has a significant high proportion of males in both groups (above 76\%). This creates a future problem in terms of external validity of the prediction model on females.
+
+The next section discusses the process which I used to build the predictive models.
+
+```{r desc-table}
 # A function to calculate t-test by variable, by group
 vars <- c("age", "male", "sbp", "rr", "gcs")
 tstats <- vector("character", length(vars))
@@ -65,7 +79,7 @@ part1 <- part1 %>%
   rbind(c("Dif of means", ans))
 
 part1 <- t(part1)
-colnames(part1) <- c("Survived", "Died", "Dif. in means")
+colnames(part1) <- c("Survived", "Died", "Dif. in Means (statistic)")
 part1 <- part1[-1,]
 
 # Race -------------------------------------------------------------------------
@@ -73,15 +87,51 @@ part2 <- dat %>%
   filter(val == 0) %>%
   group_by(died) %>%
   summarize(
-    Asian                = sprintf("%d (%.2f%%)", sum(race == 1L), sum(race == 1L)/n()*100),
-    `African American`   = sprintf("%d (%.2f%%)", sum(race == 2L), sum(race == 2L)/n()*100),
-    `Non-Hispanic white` = sprintf("%d (%.2f%%)", sum(race == 3L), sum(race == 3L)/n()*100),
-    `Hispanic white`     = sprintf("%d (%.2f%%)", sum(race == 4L), sum(race == 4L)/n()*100)
+    Asian                = sprintf(
+      "%d (%.2f%%)",
+      sum(race == "Asian"),
+      sum(race == "Asian")/n()*100),
+    `African American`   = sprintf(
+      "%d (%.2f%%)",
+      sum(race == "African American"),
+      sum(race == "African American")/n()*100),
+    `Non-Hispanic white` = sprintf(
+      "%d (%.2f%%)",
+      sum(race == "Non-Hispanic white"),
+      sum(race == "Non-Hispanic white")/n()*100),
+    `Hispanic white`     = sprintf(
+      "%d (%.2f%%)",
+      sum(race == "Hispanic white"),
+      sum(race == "Hispanic white")/n()*100)
   )
 
+part2_tests <- list(
+  Asian               = prop.test(table(dat$race == "Asian", dat$died)),
+  `African American`  = prop.test(table(dat$race == "African American", dat$died)),
+  `Non-Hispanic white`= prop.test(table(dat$race == "Non-Hispanic white", dat$died)),
+  `Hispanic white`    = prop.test(table(dat$race == "Hispanic white", dat$died))
+)
+
+part2 <- lapply(part2_tests, function(m) {
+  with(m, {
+  sprintf("%4.2f %s", statistic,
+          case_when(
+            p.value < .001 ~ "***",
+            p.value < .01  ~ "**",
+            p.value < .05   ~ "*",
+            TRUE ~ ""
+          )
+          )
+  })
+}) %>%
+  as_tibble() %>%
+  cbind(., died = NA) %>%
+  bind_rows(part2, .) %>%
+  t
+
 # Totals -----------------------------------------------------------------------
-part2 <- cbind(t(part2), "")
-colnames(part2) <- c("Survived", "Died", "Diff. in means")
+# part2 <- cbind(t(part2), "")
+colnames(part2) <- c("Survived", "Died", "Diff. in Means (statistic)")
 part2 <- part2[-1,]
 rownames(part2) <- paste0("\\hspace{.5cm}", rownames(part2))
 
@@ -100,174 +150,149 @@ tab <- rbind(
   part2,
   part3
   )
-knitr::kable(tab, caption = "Descriptive statistics by status (In-hospital mortality). In the case of continuous variables, standard errors are showed in parenthesis, otherwise it shows the proportion within the group. For the significance of the differences $^{***}p<0.001$, $^{**}p<0.01$, $^*p<0.05$.")
-```
-
-## Part 2 - 5: Predictive model
-
-```{r coding-race}
-race <- c("Asian", "African American", "Non-Hispanic white", "Hispanic white")
-dat$race <- race[dat$race]
-dat$race2 <- factor(dat$race, levels = race)
+knitr::kable(tab, caption = "\\label{tab:desc}Descriptive statistics by status (In-hospital mortality). In the case of continuous variables, standard errors are showed in parenthesis, otherwise it shows the proportion within the group. For the significance of the differences $^{***}p<0.001$, $^{**}p<0.01$, $^*p<0.05$.")
 ```
 
 
-```{r model_part2_01, message=FALSE, warning=FALSE}
-library(texreg)
-# Baseline model
-model_part2a_01 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + sbp + rr + gcs, data=.,
-      family = binomial(link = "logit"))
+\clearpage
+## Questions 2-4
 
-model_part2a_02 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + I(age^2) + male + race + sbp + rr + gcs, data=.,
-      family = binomial(link = "logit"))
+For the model selection part, I use an automatic feature selection process that maximizes the model accuracy. In particular, the following algorithm builds the model incremnetally by adding one variable at a time from a pool of variables that includes the baseline features plus monotonic transformations and interaction terms. 
 
-model_part2a_07 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + I(sbp ^ 2) + rr + gcs, data=.,
-      family = binomial(link = "logit"))
+Ultimately, I kept a set of best models instead of a single best. The algorithm that I used for such is described as follows:
 
-model_part2a_08 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + sbp + I(rr ^ 2) + gcs, data=.,
-      family = binomial(link = "logit"))
+1.  Increase the features space by: (a) transforming continuous variables with the functions $()^{-1}$, square-root, and $()^2$ and (b) generating interaction terms across all features. Denote the set of features $S$ (with a cardinality of 180).
 
-model_part2a_09 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + sbp + I(gcs ^ 2), data=.,
-      family = binomial(link = "logit"))
+2.  Once the pool of features to be used in the predicting model has been generated, initiate the set of best parameters $B = S \times S$ ($|S| \choose 2$ possible models to be estimated), then:
+    
+    a.  Generate all possible combinations of $(B, S)$, this is $B' = B \times S$
+    
+    b.  For all $b \in B'$, estimate a logistic regression model, and calculate Area Under the Curve (AUC) using the observed and predicted values.
+    
+    c.  In order to keep the number of models manageble, keep the best 100 in terms of AUC, and replace $B$ with that set.
+    
+    d.  Contiue with the next step
+    
+I repeated steps a through d 8 times so that we have 800 possible models to be selected for our predictive problem. \autoref{fig:roc-dist} shows the distribution of the aforementioned models.
 
-model_part2a_10 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + I(age ^ 2) + male + race + sbp + I(gcs ^ 2), data=.,
-      family = binomial(link = "logit"))
+```{r plot-dist-models, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="\\label{fig:roc-dist}Distribution of the 800 different models. Overall we can see that the accuracy of the prediction model rises exponentially as a function of the number of features incude in the model. At the same time, models with a large number of variables tend to be less signficant in terms of having all coefficients simultaneously significant, i.e. we say that a model is significant if all variables are statistically significant in the model."}
+library(ggplot2)
+models %>%
+  mutate(signi = if_else(significant, "Yes", "No")) %>%
+  ggplot(aes(x = nvars, y = auc, color = signi)) +
+    theme_bw() +
+    scale_color_viridis_d(alpha = .5) +
+    labs(x = "Number of Features", y = "AUC", color = "All variables\nsignificant") +
+    geom_jitter() +
+  scale_x_continuous(breaks = 2:9)
+  
 ```
+
+\clearpage
+
+## Question 5
+
+\autoref{tab:top10} and \autoref{tab:top10_significant} show the parameter estimates of 20 different models that showed to have the highest accuracy values.
 
 \blandscape
 
-```{r tabulating, results='asis',}
+```{r tabulating-best-10, results='asis'}
 
-# New labels for the coefficients
-coef_labels <- list(
-      age                      = "Age",
-      male                     = "Male",
-      raceAsian                = "Asian",
-      `raceHispanic white`     = "Hispanic white",
-      `raceNon-Hispanic white` = "Non-Hispanic white",
-      sbp                      = "SBP (mm Hg)",
-      rr                       = "RR (breaths per minute)",
-      gcs                      = "Glasgow Coma Scale (GCS)",
-      `I(age^2)`               = "$\\mbox{Age}^2$",
-      `I(sbp^2)`               = "$\\mbox{SBP}^2$",
-      `I(rr^2)`                = "$\\mbox{RR}^2$",
-      `I(gcs^2)`               = "$\\mbox{GCS}^2$",
-      `I(age * gcs)`           = "Age x GCS",
-      `I(age * rr)`            = "Age x RR",
-      `I(age * male)`          = "Age x Male",
-      `I(age * sbp)`           = "Age x SBP",
-      `I(male * gcs)`          = "Male x GCS",
-      `I(male * rr)`           = "Male x RR",
-      `I(male * sbp)`          = "Male x SBP",
-      "(Intercept)"            = "(Intercept)"
-    )
+# First, we pick the top 10 models
+dat0 <- dplyr::filter(dat, val==0)
 
-models <- ls(pattern = "^model\\_part2a")
-mget(models) %>%
-  set_names(sprintf("(%d)", 1:length(models))) %>%
-  texreg(custom.coef.map = coef_labels
+coef_labels <- colnames(dat0) %>%
+  stringr::str_replace_all("[_]{2}", " $\\\\times$ ") %>%
+  stringr::str_replace_all("[_]sqrt", "$\\\\vphantom{1}^{1/2}$") %>%
+  stringr::str_replace_all("[_]over", "$\\\\vphantom{1}^{-1}$") %>%
+  stringr::str_replace_all("[_]2", "$\\\\vphantom{1}^{2}$") %>%
+  stringr::str_replace_all("[_]", " ") %>%
+  stringr::str_replace_all("race", "") %>%
+  stringr::str_replace_all("age", "Age") %>%
+  stringr::str_replace_all("male", "Male") %>%
+  stringr::str_replace_all("sbp", "SBP (mm Hg)") %>%
+  stringr::str_replace_all("rr", "RR (breaths per minute)") %>%
+  stringr::str_replace_all("gcs", "Glasgow Coma Scale") %>%
+  set_names(colnames(dat0)) %>%
+  sort %>%
+  as.list %>%
+  c(list("(Intercept)" = "(Intercept)"))
+
+models_top_10 <- models %>%
+  head(10) %>%
+  extract2("model") %>%
+  lapply(as.formula, env = .GlobalEnv) %>%
+  lapply(glm, data = dat0, family = binomial(link = "logit"))
+
+texreg::texreg(
+  models_top_10,
+  custom.coef.map = coef_labels,
+  fontsize = "footnotesize", label = "tab:top10",
+  caption = "Best 10 models regardless of whether all the features show as statistically significant at the 95 \\% level."
   )
+
+models_top_10_significant <- models %>%
+  filter(significant == TRUE) %>%
+  head(10) %>%
+  extract2("model") %>%
+  lapply(as.formula, env = .GlobalEnv) %>%
+  lapply(glm, data = dat0, family = binomial(link = "logit"))
+
+texreg::texreg(
+  models_top_10_significant,
+  custom.coef.map = coef_labels,
+  fontsize = "footnotesize", label = "tab:top10_significant",
+  caption = "Best 10 models in which all the features show as statistically significant at the 95 \\% level."
+  )
+
 ```
+
+
 
 \elandscape
 
-```{r}
-model_part2b_01 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + I(age*male) + male + race + sbp + rr + gcs, data=.,
-      family = binomial(link = "logit"))
+\clearpage
+## Question 6
 
-model_part2b_02 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + I(age*sbp) + rr + gcs, data=.,
-      family = binomial(link = "logit"))
-
-model_part2b_03 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + sbp + I(age*rr) + gcs, data=.,
-      family = binomial(link = "logit"))
-
-model_part2b_04 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + sbp + rr + I(age*gcs), data=.,
-      family = binomial(link = "logit"))
-
-model_part2b_05 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + I(male * sbp) + rr + gcs, data=.,
-      family = binomial(link = "logit"))
-
-model_part2b_06 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + sbp + I(male * rr) + gcs, data=.,
-      family = binomial(link = "logit"))
-
-model_part2b_07 <- dat %>%
-  filter(val == 0) %>%
-  glm(died ~ age + male + race + sbp + rr + I(male * gcs), data=.,
-      family = binomial(link = "logit"))
-```
-
-\blandscape
-
-```{r tables-part2, results='asis'}
-models <- ls(pattern = "^model\\_part2b")
-mget(models) %>%
-  set_names(sprintf("(%d)", 1:length(models))) %>%
-  texreg(custom.coef.map = coef_labels
-  )
-```
-
-\elandscape
-
-# Part 6: Provide the model formula for the probability of dying in the hospital
-
-The model with the lowest BIC is model 
+If we chose the model with the highst AUC considering only those that have all of its features' as statistically signifiant predictors, we obtain the following linear prediction model:
 
 ```{r bestmodel}
-models <- ls(pattern = "^model\\_part")
-models <- mget(models)
-
-best_model <- sapply(models, BIC) %>%
-  which.min()
-
-best_model <- models[[best_model]]
+best_model <- 1L
+best_model <- models_top_10_significant[[best_model]]
 ```
+
+\scriptsize
 
 ```{r printing-best-model, results='asis'}
 best_coefs <- coef(best_model)
 names(best_coefs) <- coef_labels[match(names(best_coefs), names(coef_labels))]
 
 # Adding a split in the middle
-mid <- ceiling(length(best_coefs) / 2)
+mid1 <- ceiling(length(best_coefs) / 3)
+mid2 <- ceiling(length(best_coefs) / 3 * 2)
 
-cat("\\begin{multline}\n")
+cat("\\begin{multline}\n \\hat\\theta^{\\mbox{t}} x = ")
 best_coefs <- sprintf("%+4.2f \\times \\mbox{%s}", best_coefs, names(best_coefs))
-best_coefs[mid] <- paste0(best_coefs[mid], "\\\\")
+best_coefs[c(mid1, mid2)] <- paste0(best_coefs[c(mid1, mid2)], "\\\\")
 cat(best_coefs, sep = " ")
 cat("\\end{multline}\n")
 ```
 
-  
+\normalsize
+
+From the linear prediction, we can then compute the probability of dying by exponentiating the previous equation and dividing the number by 1 + itself, this is:
+
 \begin{equation}
-\Pr{\mbox{die} = 1} = \mbox{logit}^{-1}(X\beta)
+\Pr{die = 1 | X = x} = \frac{\exp{\hat\theta^{\mbox{t}} x}}{1 + \exp{\hat\theta^{\mbox{t}} x}}
 \end{equation}
 
-# Part 7: ROC Curves
+\clearpage
 
-```{r printing-aucs, message=FALSE, warning=FALSE}
+# Questions 7 and 8
+
+\autoref{fig:roc_ok} and \autoref{tab:class_ok} show the AUC curve and classification table for the selected model on the training data, while \autoref{fig:bad_auc} shows the AUC ROC curve in the case of using the model to predict the dependent variable with out of the sample data.
+
+```{r printing-aucs, message=FALSE, warning=FALSE, fig.cap="\\label{fig:roc_ok}ROC AUC curve for the selected model. The model shows a good performance within sample with an AUC value that lives within 0.89 and 0.91. A very close range, but rather high accuracy level."}
 library(AUC)
 library(pROC)
 
@@ -285,9 +310,15 @@ plot(
   )
 ```
 
-# Part 8: Predictions out of sample
+```{r classification_tab}
+classification_tab <- prop.table(table(round(pred, 0), best_model$y))
+colnames(classification_tab) <- c("Obs. 0s", "Obs. 1s")
+rownames(classification_tab) <- c("Predicted 0s", "Predicted 1s")
 
-```{r}
+knitr::kable(classification_tab, digits = 2, caption = "\\label{tab:class_ok}Classification table. Rows show the number of individuals as by the predictions, while the columns classify individuals by their observed feature.")
+```
+
+```{r outofsample-auc, fig.cap="\\label{fig:bad_auc}AUC ROC curve for out-of-sample predictions. Compared to the within sample predictions, this is doing worse. With a lower observed AUC of 0.82 and a CI of 0.87 0.90, the model seems to be experiencing overfitting."}
 pred_out_of_sample <- predict(
   best_model,
   newdata = filter(dat, val == 1),
@@ -298,7 +329,7 @@ pred_out_of_sample <- predict(
 # Generating AUC and ROC curve
 model_aucs <- ci.auc(as.factor(filter(dat, val == 1)$died), pred_out_of_sample)
 plot(
-  AUC::roc(pred_out_of_sample, as.factor(filter(dat, val == 0)$died)),
+  AUC::roc(pred_out_of_sample, as.factor(filter(dat, val == 1)$died)),
   main = sprintf(
     "ROC\nAUC of %4.2f [%4.2f; %4.2f CI at the %i%%]", 
     model_aucs[2], model_aucs[1], model_aucs[3], attr(model_aucs, "conf.level")*100
@@ -306,5 +337,122 @@ plot(
   )
 ```
 
-Awfull!
+
+From what we observe on \autoref{fig:roc_ok} and \autoref{fig:bad_auc}, the model is clearly doing better within sample fit, which which means that it could be the case that we are overfitting the data. That said, part of it is not surprising since (1) the number of events in which an individual dies in the data set is rather small and (2)
+
+
+\clearpage
+
+# Question 9
+
+In this paper we have build a classification model for prediction of the likelihood of dying for patients in an hospital using age, gender, and some other measurements regarding the paitiens' health status. As a difference from a statistical inference scenario, here we are applying a heuristic that tries to identify the best prediction model using brute force to calculate thousands of plausible model candidates. \autoref{tab:nmodels} shows a summary of the number of models estimated per number of features selected.
+
+```{r tab-model-counts}
+tab_9 <- models %>%
+  group_by(nvars) %>%
+  summarize(`N models` = mean(nmodels)) %>%
+  set_colnames(c("Num. Features", "Num. Fitted Models"))
+
+tab_9 <- rbind(
+  tab_9,
+  tibble(
+    "Num. Features" = "Total",
+    "Num. Fitted Models" = sum(tab_9[[2]]))
+  )
+
+knitr::kable(tab_9, caption = "\\label{tab:nmodels}Number of unique fitted models per number of features included. In total we estimated about 75,000 different specifications to try to find the one which maximized the prediction accuracy measured as AUC.")
+```
+
+ The large sample space of potential models to use includes, besides of the baseline features, interaction terms and trasformations of the independent variables
+
+\clearpage
+
+# Question 10
+
+```{r last-models, results='asis'}
+dat <- dat %>%
+  mutate(asaps = as.factor(asaps)) %>%
+  model.matrix(~ asaps, data = .) %>%
+  as_tibble() %>%
+  select(-1) %>%
+  set_colnames(tolower(colnames(.))) %>%
+  set_colnames(gsub("^asaps", "asaps_", colnames(.))) %>%
+  set_colnames(gsub("([-]|\\s+)", "_", colnames(.))) %>%
+  bind_cols(dat, .) %>%
+  # select(-asaps2) %>%
+  mutate_at(vars(starts_with("asaps_")), as.integer)
+
+dat0 <- filter(dat, val == 0)
+dat1 <- filter(dat, val == 1)
+
+best_model_formula <- models %>%
+  filter(significant == TRUE) %>%
+  head(1) %>%
+  extract2("model")
+
+source("functions.R")
+last_model0 <- sprintf("%s + %s", best_model_formula, "asaps_2 + asaps_3 + asaps_4 + asaps_5") %>%
+  as.formula(env = .GlobalEnv) %>%
+  glm(family = binomial("logit"), data = dat0)
+
+last_model1 <- sprintf("%s + %s + age - sbp_2__gcs_over - sbp_2__gcs_sqrt - sbp__gcs", best_model_formula, "asaps_4 + asaps_5") %>%
+  as.formula(env = .GlobalEnv) %>%
+  glm(family = binomial("logit"), data = dat0) 
+  # glm_pval
+
+last_model2 <- {died ~ age__rr + rr_over__gcs_over + sbp_2__gcs_2 + asaps_4 + asaps_5 } %>%
+  as.formula(env = .GlobalEnv) %>%
+  glm(family = binomial("logit"), data = dat0)
+
+last_model3 <- {died ~ age + age__rr + rr_over__gcs_over + sbp_2__gcs_2 + asaps_4 + asaps_5 } %>%
+  as.formula(env = .GlobalEnv) %>%
+  glm(family = binomial("logit"), data = dat0)
+
+last_model4 <- {died ~ age + gcs + age__rr + asaps_4 + asaps_5} %>%
+  glm(family = binomial("logit"), data = dat0)
+
+
+texreg::texreg(
+  list(
+    best_model,
+    last_model0,
+    last_model1,
+    last_model2,
+    last_model3,
+    last_model4
+  ),
+  custom.coef.map = c(coef_labels, list(
+    asaps_2 = "Mild sys. dis.",
+    asaps_3 = "Severe sys. dis.",
+    asaps_4 = "Severe sys. dis. that is a const. threat to life",
+    asaps_5 = "Not expected to survive without operation"
+    )), fontsize = "scriptsize",
+  caption = "Estimated coefficients of the model selected in part 1 versus models generated after including the ASAPS variable in the feature set.")
+```
+
+```{r last-table}
+last_table <- bind_rows(
+  glm_pval(best_model),
+  glm_pval(last_model0),
+  glm_pval(last_model1),
+  glm_pval(last_model2),
+  glm_pval(last_model3),
+  glm_pval(last_model4)
+) %>%
+  transmute(
+    Model = 1:n(),
+    `All feat. signif.` = if_else(significant, "Yes", "No"),
+    `AUC` = sprintf("%.3f [%.3f; %.3f]", auc, auc_lower, auc_upper),
+    `AUC out of sample` = sprintf("%.3f [%.3f; %.3f]", auc_out, auc_lower_out, auc_upper_out),
+    ) 
+
+colnames(last_table) <- gsub("auc", "AUC", colnames(last_table))
+colnames(last_table) <- gsub("[_]", " ", colnames(last_table))
+
+knitr::kable(
+  last_table, digits = 3,
+  caption = "Comparing the model selection in part 1 with variants after including the ASAPS variable. While in general the new variable is not improving the out of sample AUC, it does improve significantly the within sample AUC up to about 0.03 units."
+  )
+```
+
 
