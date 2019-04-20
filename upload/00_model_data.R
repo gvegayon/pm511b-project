@@ -71,4 +71,4 @@ for (v in vpairs) {
   
 }
 
-saveRDS(dat, "data/model_data.rds")
+saveRDS(dat, "model_data.rds")

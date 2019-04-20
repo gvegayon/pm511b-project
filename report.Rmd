@@ -1,16 +1,17 @@
 ---
 title: "PM511b Data Analysis Project"
 author: "George G Vega Yon"
-date: "April 5, 2019"
+date: "April 19, 2019"
 output:
   pdf_document:
     includes:
       in_header: header.tex
     keep_tex: true
+fontsize: 11pt
 ---
 
 ```{r setup, include=FALSE, warning=FALSE, message=FALSE}
-knitr::opts_chunk$set(echo = FALSE, fig.align = "!h", out.width = ".7\\linewidth", fig.align = "center")
+knitr::opts_chunk$set(echo = FALSE, fig.align = "htb", out.width = ".7\\linewidth", fig.align = "center")
 library(dplyr)
 library(magrittr)
 library(ggplot2)
@@ -24,13 +25,15 @@ models <- readRDS("data/automatic_model_selection.rds")
 
 ## Question 1
 
-\autoref{tab:desc} shows a set of descriptive statistics for the variables in the dataset. The following observations:
+\autoref{tab:desc} shows a set of descriptive statistics for the variables in the dataset, in particular, comparing means and proportions between surviving and deceased patients. From it we can see the following regarding the training dataset (`val = 0`):
 
-1.  In the training dataset, only a handful of cases corresponds to patients that have died. In an ideal world we would like to have a rather balance sample size of the two cases.
+1.  Only a handful of cases (174 out of `r 2615 + 174`) corresponds to patients that have died. This means that, considering the hetorgeneity of the features that we will be using in our predictive modeling, we don't have anough cases to train our data with.
 
-2.  Of all the variables, *Age*, *Glasgow Coma Scale*, and *(Ethnycity = Asian)* are the only ones that show to be significantly different across groups. This makes them more likely to be meaningful (significant) in the prediction model that will be described in the next section.
+2.  Of all the variables, *Age*, *Glasgow Coma Scale*, and *(Ethnycity = Asian)* are the only ones that show to be significantly different across groups (pvalues less than 0.001, 0.001, and 0.01 respectively). This makes them more likely to be meaningful (significant) in the prediction model that will be described in the next section.
 
 3.  Finally, the training dataset has a significant high proportion of males in both groups (above 76\%). This creates a future problem in terms of external validity of the prediction model on females.
+
+
 
 The next section discusses the process which I used to build the predictive models.
 
@@ -129,53 +132,56 @@ part2 <- lapply(part2_tests, function(m) {
   bind_rows(part2, .) %>%
   t
 
-# Totals -----------------------------------------------------------------------
-# part2 <- cbind(t(part2), "")
 colnames(part2) <- c("Survived", "Died", "Diff. in Means (statistic)")
 part2 <- part2[-1,]
 rownames(part2) <- paste0("\\hspace{.5cm}", rownames(part2))
 
-part3 <- dat %>%
+# Totals -----------------------------------------------------------------------
+# part2 <- cbind(t(part2), "")
+
+part4 <- dat %>%
   filter(val == 0) %>%
   group_by(died) %>%
   summarize(
     Total = n()
   ) %>% t
-part3 <- cbind(part3[-1,, drop=FALSE], "")
-colnames(part3) <- NULL
+part4 <- cbind(part4[-1,, drop=FALSE], "")
+colnames(part4) <- NULL
 
 tab <- rbind(
   part1,
   structure(c("", "", ""), class="matrix", dim=c(1, 3), dimnames = list("\\it Ethnicity", NULL)),
   part2,
-  part3
+  part4
   )
 knitr::kable(tab, caption = "\\label{tab:desc}Descriptive statistics by status (In-hospital mortality). In the case of continuous variables, standard errors are showed in parenthesis, otherwise it shows the proportion within the group. For the significance of the differences $^{***}p<0.001$, $^{**}p<0.01$, $^*p<0.05$.")
 ```
 
 
-\clearpage
+
 ## Questions 2-4
 
-For the model selection part, I use an automatic feature selection process that maximizes the model accuracy. In particular, the following algorithm builds the model incremnetally by adding one variable at a time from a pool of variables that includes the baseline features plus monotonic transformations and interaction terms. 
+For the model selection part, I use an automatic feature selection process that maximizes the prediction accuracy. In particular, the following algorithm builds the model incremnetally by adding one variable at a time from a pool of variables that includes: the baseline features, monotonic transformations of those, and interaction terms. 
 
-Ultimately, I kept a set of best models instead of a single best. The algorithm that I used for such is described as follows:
+Ultimately, I kept a set of best models instead of a single best, and what's more, throughout the process the algorithm never pics a single model, on the contrary, it carries around a set of 100 bests models. The algorithm used is described in what follows:
 
-1.  Increase the features space by: (a) transforming continuous variables with the functions $()^{-1}$, square-root, and $()^2$ and (b) generating interaction terms across all features. Denote the set of features $S$ (with a cardinality of 180).
+1.  Start by increasing the features space by: (a) transforming continuous variables with the functions $()^{-1}$, square-root, and $()^2$ and (b) generating interaction terms across all features. Denote the set of features $S$. In our data, this set has a cardinality of 186.\footnote{I the case of the variable GCS, we could have transformed it into a categorical variable following the description in the dataset. I chose not to do so under the rationale that (1) if associated with the dependent variable, the association should be monotonic and (2) if not completely linear, the applied monotonic transformations should be able to capture part of its effect.}
 
-2.  Once the pool of features to be used in the predicting model has been generated, initiate the set of best parameters $B = S \times S$ ($|S| \choose 2$ possible models to be estimated), then:
+2.  In order to maintain the feature space relatively compact, I then estimated logistic regression models using one of $S$ at a time, including an intercept, and only kept those variables that showed to be significant at the 95\% level. Recall that $S$ also includes interaction terms and transformed verions of the baseline data. At this point the pool of features reduced to 110.
+
+3.  Once the pool of features to be used in the predicting model has been generated, initiate the set of best parameters $B = S \times S$ ($|S| \choose 2$ possible models to be estimated), then:
     
     a.  Generate all possible combinations of $(B, S)$, this is $B' = B \times S$
     
     b.  For all $b \in B'$, estimate a logistic regression model, and calculate Area Under the Curve (AUC) using the observed and predicted values.
     
-    c.  In order to keep the number of models manageble, keep the best 100 in terms of AUC, and replace $B$ with that set.
+    c.  In order to keep the number of models manageble, keep the best 100 in terms of AUC, and replace $B$ with that set. This is a crucial step since if we don't reduce the number of models that will be used for the next iteration of the algorithm, the number of models to estimates becomes unmanageable\footnote{In our case, wanted us to compute all the possible combinations (excluding the empty model), we would need to estimate $`r floor(2^(110))`$ models.}
     
     d.  Contiue with the next step
     
 I repeated steps a through d 8 times so that we have 800 possible models to be selected for our predictive problem. \autoref{fig:roc-dist} shows the distribution of the aforementioned models.
 
-```{r plot-dist-models, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="\\label{fig:roc-dist}Distribution of the 800 different models. Overall we can see that the accuracy of the prediction model rises exponentially as a function of the number of features incude in the model. At the same time, models with a large number of variables tend to be less signficant in terms of having all coefficients simultaneously significant, i.e. we say that a model is significant if all variables are statistically significant in the model."}
+```{r plot-dist-models, echo=FALSE, message=FALSE, warning=FALSE, fig.cap="\\label{fig:roc-dist}Distribution of the 800 different models. Overall we can see that the accuracy of the prediction model rises exponentially as a function of the number of features incude in the model. At the same time, models with a large number of variables tend to be less signficant in terms of having all coefficients simultaneously significant, i.e. we say that a model is significant if all variables are statistically significant in the model.", fig.pos='!h', fig.align='center'}
 library(ggplot2)
 models %>%
   mutate(signi = if_else(significant, "Yes", "No")) %>%
@@ -188,19 +194,84 @@ models %>%
   
 ```
 
+The process as a whole consisted on estimating about 75,000 models, as shown in the \autoref{tab:nmodels}.
+
+```{r tab-model-counts}
+tab_9 <- models %>%
+  group_by(nvars) %>%
+  summarize(`N models` = mean(nmodels)) %>%
+  set_colnames(c("Num. Features", "Num. Fitted Models"))
+
+tab_9 <- rbind(
+  tab_9,
+  tibble(
+    "Num. Features" = "Total",
+    "Num. Fitted Models" = sum(tab_9[[2]]))
+  )
+
+knitr::kable(tab_9, caption = "\\label{tab:nmodels}Number of unique fitted models per number of features included. In total we estimated about 75,000 different specifications to try to find the one which maximized the prediction accuracy measured as AUC.")
+```
+
+
 \clearpage
 
 ## Question 5
 
-\autoref{tab:top10} and \autoref{tab:top10_significant} show the parameter estimates of 20 different models that showed to have the highest accuracy values.
+\autoref{tab:top10} and \autoref{tab:top10_significant} show the parameter estimates of 20 different models that showed to have the highest accuracy values, and \autoref{tab:aucs_top10} and \autoref{tab:aucs_top10_significant} show their corresponding prediction accuracy levels in (`val = 0`) and out of sample (`val = 1`).
+
+```{r re-fitting-models}
+# First, we pick the top 10 models
+dat0 <- dplyr::filter(dat, val==0)
+dat1 <- dplyr::filter(dat, val==1)
+
+models_top_10 <- models %>%
+  head(10) %>%
+  extract2("model") %>%
+  lapply(as.formula, env = .GlobalEnv) %>%
+  lapply(glm, data = dat0, family = binomial(link = "logit"))
+
+models_top_10_significant <- models %>%
+  filter(significant == TRUE) %>%
+  head(10) %>%
+  extract2("model") %>%
+  lapply(as.formula, env = .GlobalEnv) %>%
+  lapply(glm, data = dat0, family = binomial(link = "logit"))
+```
+
+
+```{r aucs-per-model}
+
+models_top_10 %>%
+  lapply(glm_pval) %>%
+  bind_rows() %>%
+  transmute(
+    Model = 1:n(),
+    `All feat. signif.` = if_else(significant, "Yes", "No"),
+    `AUC` = sprintf("%.3f [%.3f; %.3f]", auc, auc_lower, auc_upper),
+    `AUC out of sample` = sprintf("%.3f [%.3f; %.3f]", auc_out, auc_lower_out, auc_upper_out),
+    ) %>% knitr::kable(
+      digits = 3,
+      caption = "\\label{tab:aucs_top10}In and out-of-sample AUC levels with the corresponding 95\\% CI for the top 10 models regardless of whether all features are significant. The corresponding coefficients of these models are reported on \\autoref{tab:top10}"
+  )
+
+models_top_10_significant %>%
+  lapply(glm_pval) %>%
+  bind_rows() %>%
+  transmute(
+    Model = 1:n(),
+    `All feat. signif.` = if_else(significant, "Yes", "No"),
+    `AUC` = sprintf("%.3f [%.3f; %.3f]", auc, auc_lower, auc_upper),
+    `AUC out of sample` = sprintf("%.3f [%.3f; %.3f]", auc_out, auc_lower_out, auc_upper_out),
+    ) %>% knitr::kable(
+      digits = 3,
+      caption ="\\label{tab:aucs_top10_significant}In and out-of-sample AUC levels with the corresponding 95\\% CI for the top 10 models constrained to the set of those where all the features should be significant. The corresponding coefficients of these models are reported on \\autoref{tab:top10_significant}."
+  )
+```
+
 
 \blandscape
 
 ```{r tabulating-best-10, results='asis'}
-
-# First, we pick the top 10 models
-dat0 <- dplyr::filter(dat, val==0)
-
 coef_labels <- colnames(dat0) %>%
   stringr::str_replace_all("[_]{2}", " $\\\\times$ ") %>%
   stringr::str_replace_all("[_]sqrt", "$\\\\vphantom{1}^{1/2}$") %>%
@@ -218,31 +289,18 @@ coef_labels <- colnames(dat0) %>%
   as.list %>%
   c(list("(Intercept)" = "(Intercept)"))
 
-models_top_10 <- models %>%
-  head(10) %>%
-  extract2("model") %>%
-  lapply(as.formula, env = .GlobalEnv) %>%
-  lapply(glm, data = dat0, family = binomial(link = "logit"))
-
 texreg::texreg(
   models_top_10,
   custom.coef.map = coef_labels,
-  fontsize = "footnotesize", label = "tab:top10",
-  caption = "Best 10 models regardless of whether all the features show as statistically significant at the 95 \\% level."
+  fontsize = "scriptsize", label = "tab:top10",
+  caption = "Best 10 models regardless of whether all the features show as statistically significant at the 95 \\% level. The corresponding AUCs are reported in \\autoref{tab:aucs_top10}."
   )
-
-models_top_10_significant <- models %>%
-  filter(significant == TRUE) %>%
-  head(10) %>%
-  extract2("model") %>%
-  lapply(as.formula, env = .GlobalEnv) %>%
-  lapply(glm, data = dat0, family = binomial(link = "logit"))
 
 texreg::texreg(
   models_top_10_significant,
   custom.coef.map = coef_labels,
   fontsize = "footnotesize", label = "tab:top10_significant",
-  caption = "Best 10 models in which all the features show as statistically significant at the 95 \\% level."
+  caption = "Best 10 models in which all the features show as statistically significant at the 95 \\% level. The corresponding AUCs are reported in \\autoref{tab:aucs_top10_significant}."
   )
 
 ```
@@ -251,7 +309,7 @@ texreg::texreg(
 
 \elandscape
 
-\clearpage
+
 ## Question 6
 
 If we chose the model with the highst AUC considering only those that have all of its features' as statistically signifiant predictors, we obtain the following linear prediction model:
@@ -286,11 +344,11 @@ From the linear prediction, we can then compute the probability of dying by expo
 \Pr{die = 1 | X = x} = \frac{\exp{\hat\theta^{\mbox{t}} x}}{1 + \exp{\hat\theta^{\mbox{t}} x}}
 \end{equation}
 
-\clearpage
+
 
 # Questions 7 and 8
 
-\autoref{fig:roc_ok} and \autoref{tab:class_ok} show the AUC curve and classification table for the selected model on the training data, while \autoref{fig:bad_auc} shows the AUC ROC curve in the case of using the model to predict the dependent variable with out of the sample data.
+\autoref{fig:roc_ok} and \autoref{tab:class_ok} show the AUC curve and classification table for the selected model on the training data (`val = 0`), while \autoref{fig:bad_auc} shows the AUC ROC curve in the case of using the model to predict the dependent variable with out-of-the-sample data (`val = 1`).
 
 ```{r printing-aucs, message=FALSE, warning=FALSE, fig.cap="\\label{fig:roc_ok}ROC AUC curve for the selected model. The model shows a good performance within sample with an AUC value that lives within 0.89 and 0.91. A very close range, but rather high accuracy level."}
 library(AUC)
@@ -310,12 +368,14 @@ plot(
   )
 ```
 
+
+
 ```{r classification_tab}
 classification_tab <- prop.table(table(round(pred, 0), best_model$y))
 colnames(classification_tab) <- c("Obs. 0s", "Obs. 1s")
 rownames(classification_tab) <- c("Predicted 0s", "Predicted 1s")
 
-knitr::kable(classification_tab, digits = 2, caption = "\\label{tab:class_ok}Classification table. Rows show the number of individuals as by the predictions, while the columns classify individuals by their observed feature.")
+knitr::kable(classification_tab, digits = 2, caption = "\\label{tab:class_ok}Classification table. Rows show the number of individuals as by the predictions, while the columns classify individuals by their observed feature. Classification was done on the basis of closest integer, in other words, rounding the predicted values so that those reach either 0 or 1.")
 ```
 
 ```{r outofsample-auc, fig.cap="\\label{fig:bad_auc}AUC ROC curve for out-of-sample predictions. Compared to the within sample predictions, this is doing worse. With a lower observed AUC of 0.82 and a CI of 0.87 0.90, the model seems to be experiencing overfitting."}
@@ -338,36 +398,22 @@ plot(
 ```
 
 
-From what we observe on \autoref{fig:roc_ok} and \autoref{fig:bad_auc}, the model is clearly doing better within sample fit, which which means that it could be the case that we are overfitting the data. That said, part of it is not surprising since (1) the number of events in which an individual dies in the data set is rather small and (2)
+From what we observe on \autoref{fig:roc_ok} and \autoref{fig:bad_auc}, the model is clearly doing better within sample prediction (89\% AUC) vs out-of-sample prediction (84\% AUC), which means that it could be the case that we are overfitting the data. In order to reduce overfitting, we could hae tried incorporating cross-validation to the feature selection process. Using cross-validation we could have picked features (and in essence, models) by looking at those that maximized the average AUC across the folds (partitions of the data as a produc of cross-validation).
 
-
-\clearpage
 
 # Question 9
 
-In this paper we have build a classification model for prediction of the likelihood of dying for patients in an hospital using age, gender, and some other measurements regarding the paitiens' health status. As a difference from a statistical inference scenario, here we are applying a heuristic that tries to identify the best prediction model using brute force to calculate thousands of plausible model candidates. \autoref{tab:nmodels} shows a summary of the number of models estimated per number of features selected.
+In this paper we have build a classification model to predict the death of patients who suffered of a head injury which caused them attending a hospital's emergency room. Using age, gender, ethnicity, and some other measurements regarding the paitiens' health status such as symbolic blood preassure, respiratory rate, and the Glasgow Coma Scale, we trained various logistic regression models--which corresponds to the branch of supervised learnig in machine learning literature. The final model itself was build incrementally using an automatic feature selection process which tried to increment prediction accuracy by adding one feature at a time, while at the same time only preserving models in which all the features were statistically significant. The whole process required estimating dozens of thousands of models with various different sets of features. 
 
-```{r tab-model-counts}
-tab_9 <- models %>%
-  group_by(nvars) %>%
-  summarize(`N models` = mean(nmodels)) %>%
-  set_colnames(c("Num. Features", "Num. Fitted Models"))
-
-tab_9 <- rbind(
-  tab_9,
-  tibble(
-    "Num. Features" = "Total",
-    "Num. Fitted Models" = sum(tab_9[[2]]))
-  )
-
-knitr::kable(tab_9, caption = "\\label{tab:nmodels}Number of unique fitted models per number of features included. In total we estimated about 75,000 different specifications to try to find the one which maximized the prediction accuracy measured as AUC.")
-```
-
- The large sample space of potential models to use includes, besides of the baseline features, interaction terms and trasformations of the independent variables
-
-\clearpage
 
 # Question 10
+
+For this last question, as a difference from the previous part of this work, I only analyzed a small group of models to be compared to the current best model which has an AUC of 0.89 (95\% CI [0.871; 0.913]) for the training data and a 0.82 (95\% CI [0.748; 0.901]) for the out-of-sample data, versus an extension of that adding the ASAPS variable. 
+
+As shown in \autoref{tab:last-coef-tab}, adding the ASAPS variables causes changes in the coefficients of the current best-model. In particular, we see that in order to go back to having a model in which all the features are significantly associated with the outcome, we need to remove various terms of the original model. The columns "Model 2" through "Model 4" show the steps I followed from adding the new variables to remove some of the predictors in order to get to a model where all predictors are significant.
+
+Regarding the prediction accuracy itself, \autoref{tab:last-table} shows the corresponding AUC values for in-sample and out-sample data predictions. While the new feature significantly increases accuracy compared to our baseline model (rises to almost 93\%), the accuracy of out-of-sample data worseners, and the same happens in the last two especifications. Ultimately, what we observe here is an increasing overfitting of the data while at the same time we are doing worse outside of the training data set; hence, I would keep the model in which the ASAPS variables are not included.
+
 
 ```{r last-models, results='asis'}
 dat <- dat %>%
@@ -395,39 +441,29 @@ last_model0 <- sprintf("%s + %s", best_model_formula, "asaps_2 + asaps_3 + asaps
   as.formula(env = .GlobalEnv) %>%
   glm(family = binomial("logit"), data = dat0)
 
-last_model1 <- sprintf("%s + %s + age - sbp_2__gcs_over - sbp_2__gcs_sqrt - sbp__gcs", best_model_formula, "asaps_4 + asaps_5") %>%
+last_model1 <- sprintf("%s + %s - sbp_2__gcs_over - sbp_2__gcs_sqrt - sbp__gcs", best_model_formula, "asaps_4 + asaps_5") %>%
   as.formula(env = .GlobalEnv) %>%
   glm(family = binomial("logit"), data = dat0) 
   # glm_pval
 
-last_model2 <- {died ~ age__rr + rr_over__gcs_over + sbp_2__gcs_2 + asaps_4 + asaps_5 } %>%
+last_model2 <- sprintf("%s + %s - sbp_2__gcs_over - sbp_2__gcs_sqrt - sbp__gcs - male__sbp_over", best_model_formula, "asaps_4 + asaps_5") %>%
   as.formula(env = .GlobalEnv) %>%
   glm(family = binomial("logit"), data = dat0)
-
-last_model3 <- {died ~ age + age__rr + rr_over__gcs_over + sbp_2__gcs_2 + asaps_4 + asaps_5 } %>%
-  as.formula(env = .GlobalEnv) %>%
-  glm(family = binomial("logit"), data = dat0)
-
-last_model4 <- {died ~ age + gcs + age__rr + asaps_4 + asaps_5} %>%
-  glm(family = binomial("logit"), data = dat0)
-
 
 texreg::texreg(
   list(
     best_model,
     last_model0,
     last_model1,
-    last_model2,
-    last_model3,
-    last_model4
+    last_model2
   ),
   custom.coef.map = c(coef_labels, list(
     asaps_2 = "Mild sys. dis.",
     asaps_3 = "Severe sys. dis.",
     asaps_4 = "Severe sys. dis. that is a const. threat to life",
     asaps_5 = "Not expected to survive without operation"
-    )), fontsize = "scriptsize",
-  caption = "Estimated coefficients of the model selected in part 1 versus models generated after including the ASAPS variable in the feature set.")
+    )), fontsize = "normalsize",
+  caption = "\\label{tab:last-coef-tab}Estimated coefficients of the model selected in part 1 versus models generated after including the ASAPS variable in the feature set.")
 ```
 
 ```{r last-table}
@@ -435,9 +471,7 @@ last_table <- bind_rows(
   glm_pval(best_model),
   glm_pval(last_model0),
   glm_pval(last_model1),
-  glm_pval(last_model2),
-  glm_pval(last_model3),
-  glm_pval(last_model4)
+  glm_pval(last_model2)
 ) %>%
   transmute(
     Model = 1:n(),
@@ -451,7 +485,7 @@ colnames(last_table) <- gsub("[_]", " ", colnames(last_table))
 
 knitr::kable(
   last_table, digits = 3,
-  caption = "Comparing the model selection in part 1 with variants after including the ASAPS variable. While in general the new variable is not improving the out of sample AUC, it does improve significantly the within sample AUC up to about 0.03 units."
+  caption = "\\label{tab:last-table}Comparing the model selection in part 1 with variants after including the ASAPS variable. While in general the new variable is not improving the out of sample AUC, it does improve significantly the within sample AUC up to about 0.03 units."
   )
 ```
 
